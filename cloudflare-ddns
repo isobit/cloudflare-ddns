@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+curl() {
+	command curl --silent --show-error "$@"
+}
+
+ipv4_addr() {
+	curl 'https://1.1.1.1/cdn-cgi/trace' | grep 'ip=' | cut -d '=' -f 2
+}
+
+ipv6_addr() {
+	curl 'https://[2606:4700:4700::1111]/cdn-cgi/trace' | grep 'ip=' | cut -d '=' -f 2
+}
+
+curl_cf() {
+	curl -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$@"
+}
+
+list() {
+	echo "ID  TYPE  NAME  CONTENT"
+	curl_cf -X GET "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records?comment=dynamic" \
+		| jq -r '.result[] | .id + " " + .type + " " + .name + " " + .content'
+}
+
+create() {
+	local type="$1"
+	local name="$2"
+	case $type in
+		A) local addr="$(ipv4_addr)";;
+		AAAA) local addr="$(ipv6_addr)";;
+		*) echo "error: only A and AAAA are supported" >&2; return 1;;
+	esac
+	{
+		curl_cf -X POST "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records" \
+			-H 'Content-Type: application/json' \
+			--data @- \
+			| jq -r '.result | .id + " " + .type + " " + .name + " " + .content';
+	} << EOF
+{
+	"content": "${addr}",
+	"name": "${name}",
+	"type": "${type}",
+	"proxied": false,
+	"comment": "dynamic"
+}
+EOF
+}
+
+update() {
+	local type="$1"
+	local id="$2"
+	case $type in
+		A) local addr="$(ipv4_addr)";;
+		AAAA) local addr="$(ipv6_addr)";;
+		*) echo "error: only A and AAAA are supported" >&2; return 1;;
+	esac
+	{
+		curl_cf -X PATCH "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records/${id}" \
+			-H 'Content-Type: application/json' \
+			--data @- \
+			| jq -r '.result | .id + " " + .type + " " + .name + " " + .content';
+	} << EOF
+{
+	"content": "${addr}",
+	"comment": "dynamic"
+}
+EOF
+}
+
+case ${1:-help} in
+	show-ip)
+		echo "ipv4=$(ipv4_addr)"
+		echo "ipv6=$(ipv6_addr)"
+		;;
+	list)
+		list
+		;;
+	create)
+		shift
+		create "$@"
+		;;
+	update)
+		shift
+		update "$@"
+		;;
+	help|-h|--help)
+		echo "USAGE:" >&2
+		echo "    ${0} <command> [args]" >&2
+		echo "" >&2
+		echo "COMMANDS:" >&2
+		echo "    show-ip" >&2
+		echo "    list" >&2
+		echo "    create <type> <name>" >&2
+		echo "    update <type> <id>" >&2
+		echo "" >&2
+		echo "ENV:" >&2
+		echo "    CLOUDFLARE_API_TOKEN" >&2
+		echo "    CLOUDFLARE_ZONE_ID" >&2
+		exit 1
+		;;
+	*)
+		echo "unknown command ${1}" >&2
+		exit 1
+		;;
+esac
